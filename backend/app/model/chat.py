@@ -26,6 +26,7 @@ from app.model.model_platform import (
     NormalizedModelPlatform,
     NormalizedOptionalModelPlatform,
 )
+from app.remote_sub_agent.config import RemoteSubAgentConfig
 
 logger = logging.getLogger("chat_model")
 
@@ -78,6 +79,7 @@ class Chat(BaseModel):
     search_config: dict[str, str] | None = None
     # User identifier for user-specific skill configurations
     user_id: str | None = None
+    remote_sub_agent_config: RemoteSubAgentConfig | None = None
 
     @field_validator("model_type")
     @classmethod
@@ -116,7 +118,12 @@ class Chat(BaseModel):
         )
 
     def is_cloud(self):
-        return self.api_url is not None and "eigent-proxy" in self.api_url
+        if self.api_url is None:
+            return False
+        return any(
+            marker in self.api_url
+            for marker in ("eigent-proxy", "proxy.eigent.ai")
+        )
 
     def file_save_path(self, path: str | None = None):
         email = re.sub(r'[\\/*?:"<>|\s]', "_", self.email.split("@")[0]).strip(

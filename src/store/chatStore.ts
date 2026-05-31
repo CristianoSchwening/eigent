@@ -26,6 +26,11 @@ import {
 import { showCreditsToast } from '@/components/Toast/creditsToast';
 import { showStorageToast } from '@/components/Toast/storageToast';
 import { generateUniqueId, uploadLog } from '@/lib';
+import {
+  normalizeRemoteSubAgentProvider,
+  REMOTE_SUB_AGENT_PROVIDER_ID,
+  toRemoteSubAgentRuntimeConfig,
+} from '@/lib/remoteSubAgent';
 import { proxyUpdateTriggerExecution } from '@/service/triggerApi';
 import { ExecutionStatus } from '@/types';
 import {
@@ -40,9 +45,16 @@ import { fetchEventSource } from '@microsoft/fetch-event-source';
 import { FileText } from 'lucide-react';
 import { toast } from 'sonner';
 import { createStore } from 'zustand';
-import { getAuthStore, getWorkerList } from './authStore';
+import { getAuthStore, getWorkerList, type CloudModelType } from './authStore';
 import { usePageTabStore } from './pageTabStore';
 import { useProjectStore } from './projectStore';
+
+const API_CODE_TRIAL_LIMIT = '22';
+
+const hasApiCode = (value: unknown, code: string) =>
+  typeof value === 'object' &&
+  value !== null &&
+  String((value as { code?: unknown }).code) === code;
 
 interface Task {
   messages: Message[];
@@ -192,6 +204,37 @@ export function collectTaskUploadFiles(
   }
 
   return Array.from(uniqueCandidates.values());
+}
+
+type CloudModelPlatform =
+  | 'azure'
+  | 'aws-bedrock-converse'
+  | 'gemini'
+  | 'deepseek'
+  | 'minimax';
+
+// prettier-ignore
+const CLOUD_MODEL_PLATFORM_MAP: Record<CloudModelType, CloudModelPlatform> = {
+  'gemini-3.1-pro-preview': 'gemini',
+  'gemini-3.5-flash': 'gemini',
+  'gemini-3-pro-preview': 'gemini',
+  'gemini-3-flash-preview': 'gemini',
+  'claude-haiku-4-5': 'aws-bedrock-converse',
+  'claude-sonnet-4-5': 'aws-bedrock-converse',
+  'claude-sonnet-4-6': 'aws-bedrock-converse',
+  'claude-opus-4-6': 'aws-bedrock-converse',
+  'claude-opus-4-7': 'aws-bedrock-converse',
+  'gpt-5.4': 'azure',
+  'gpt-5.5': 'azure',
+  'gpt-5-mini': 'azure',
+  'deepseek-v4-pro': 'deepseek',
+  'minimax_m2_7': 'minimax',
+};
+
+export function getCloudModelPlatform(
+  cloudModelType: CloudModelType
+): CloudModelPlatform {
+  return CLOUD_MODEL_PLATFORM_MAP[cloudModelType];
 }
 
 async function uploadTaskFiles(
@@ -802,19 +845,25 @@ const chatStore = (initial?: Partial<ChatStore>) =>
       } else if (modelType === 'cloud') {
         // get current model
         const res = await proxyFetchGet('/api/v1/user/key');
+        if (hasApiCode(res, API_CODE_TRIAL_LIMIT)) {
+          throw new Error(
+            res.text ||
+              'Free trial usage limit reached. Switch to a local/custom model or use another API key to continue.'
+          );
+        }
+        if (!res.value) {
+          throw new Error(
+            res.text ||
+              'Failed to get cloud model key. Please check your account or model settings.'
+          );
+        }
         if (res.warning_code && res.warning_code === '21') {
           showStorageToast();
         }
         apiModel = {
           api_key: res.value,
           model_type: cloud_model_type,
-          model_platform: cloud_model_type.includes('gpt')
-            ? 'openai'
-            : cloud_model_type.includes('claude')
-              ? 'aws-bedrock-converse'
-              : cloud_model_type.includes('gemini')
-                ? 'gemini'
-                : 'openai-compatible-model',
+          model_platform: getCloudModelPlatform(cloud_model_type),
           api_url: res.api_url,
           extra_params: {},
         };
@@ -850,6 +899,23 @@ const chatStore = (initial?: Partial<ChatStore>) =>
         } catch (error) {
           console.error('Failed to load search configuration:', error);
         }
+      }
+
+      let remoteSubAgentConfig = null;
+      try {
+        const providersRes = await proxyFetchGet(
+          '/api/v1/remote-sub-agent-providers',
+          { provider_name: REMOTE_SUB_AGENT_PROVIDER_ID, enabled: true }
+        );
+        const providerList = Array.isArray(providersRes)
+          ? providersRes
+          : providersRes.items || [];
+        const remoteSubAgentProvider = providerList[0];
+        remoteSubAgentConfig = toRemoteSubAgentRuntimeConfig(
+          normalizeRemoteSubAgentProvider(remoteSubAgentProvider)
+        );
+      } catch (error) {
+        console.error('Failed to load remote sub agent configuration:', error);
       }
 
       const addWorkers = workerList.map((worker) => {
@@ -985,6 +1051,7 @@ const chatStore = (initial?: Partial<ChatStore>) =>
               cdp_browsers: cdp_browsers,
               env_path: envPath,
               search_config: searchConfig,
+              remote_sub_agent_config: remoteSubAgentConfig,
             })
           : undefined,
 

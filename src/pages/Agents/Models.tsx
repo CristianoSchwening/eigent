@@ -21,6 +21,13 @@ import {
 } from '@/api/http';
 import { Button } from '@/components/ui/button';
 import {
+  Dialog,
+  DialogContent,
+  DialogContentSection,
+  DialogFooter,
+  DialogHeader,
+} from '@/components/ui/dialog';
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -37,6 +44,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { SITE_URL } from '@/lib';
 import { INIT_PROVODERS } from '@/lib/llm';
 import { useAuthStore } from '@/store/authStore';
 import { Provider } from '@/types';
@@ -74,11 +82,19 @@ import moonshotImage from '@/assets/model/moonshot.svg';
 import ollamaImage from '@/assets/model/ollama.svg';
 import openaiImage from '@/assets/model/openai.svg';
 import openrouterImage from '@/assets/model/openrouter.svg';
+import orcarouterImage from '@/assets/model/orcarouter.svg';
 import qwenImage from '@/assets/model/qwen.svg';
 import sglangImage from '@/assets/model/sglang.svg';
 import vllmImage from '@/assets/model/vllm.svg';
 import zaiImage from '@/assets/model/zai.svg';
 
+import {
+  fetchProviderModels,
+  loadCachedModels,
+  saveCachedModels,
+  type ProviderModelGroup,
+} from '@/lib/providerModels';
+import { ProviderModelCombobox } from './components/ProviderModelCombobox';
 import {
   appendV1ToEndpoint,
   canAutoFixOllamaEndpoint,
@@ -108,6 +124,11 @@ type SidebarTab =
   | 'local-sglang'
   | 'local-lmstudio'
   | 'local-llama.cpp';
+
+const PLAN_CREDITS_BY_KEY: Record<string, number> = {
+  plus: 2000,
+  pro: 10000,
+};
 
 export default function SettingModels() {
   const {
@@ -199,6 +220,72 @@ export default function SettingModels() {
   const [ollamaEndpointAutoFixedOnce, setOllamaEndpointAutoFixedOnce] =
     useState(false);
 
+  // Per-cloud-provider model list state: { groups, loading, error } keyed by
+  // provider id. Populated for providers whose `INIT_PROVODERS` entry declares
+  // a `modelsEndpoint` (today: only OrcaRouter).
+  const [cloudModelsState, setCloudModelsState] = useState<
+    Record<
+      string,
+      { groups: ProviderModelGroup[]; loading: boolean; error: string | null }
+    >
+  >(() => {
+    const initial: Record<
+      string,
+      { groups: ProviderModelGroup[]; loading: boolean; error: string | null }
+    > = {};
+    for (const p of INIT_PROVODERS) {
+      if (!p.modelsEndpoint) continue;
+      const cached = loadCachedModels(p.id);
+      if (cached) {
+        initial[p.id] = { groups: cached, loading: false, error: null };
+      }
+    }
+    return initial;
+  });
+
+  const fetchCloudProviderModels = useCallback(
+    async (idx: number) => {
+      const item = items[idx];
+      if (!item?.modelsEndpoint) return;
+      const apiKey = form[idx]?.apiKey;
+      const apiHost = form[idx]?.apiHost || item.apiHost;
+      if (!apiKey) return;
+      setCloudModelsState((prev) => ({
+        ...prev,
+        [item.id]: {
+          groups: prev[item.id]?.groups || [],
+          loading: true,
+          error: null,
+        },
+      }));
+      try {
+        const groups = await fetchProviderModels(
+          apiHost,
+          item.modelsEndpoint,
+          apiKey
+        );
+        setCloudModelsState((prev) => ({
+          ...prev,
+          [item.id]: { groups, loading: false, error: null },
+        }));
+        saveCachedModels(item.id, groups);
+      } catch (err: any) {
+        setCloudModelsState((prev) => ({
+          ...prev,
+          [item.id]: {
+            groups: prev[item.id]?.groups || [],
+            loading: false,
+            error:
+              typeof err?.message === 'string'
+                ? err.message
+                : 'Failed to fetch models.',
+          },
+        }));
+      }
+    },
+    [items, form]
+  );
+
   // Generic model fetcher driven by LOCAL_MODEL_OPTIONS config.
   // Only fetches for providers that define fetchPath and parseModels.
   const fetchModelsForPlatform = useCallback(
@@ -273,6 +360,7 @@ export default function SettingModels() {
       try {
         const res = await proxyFetchGet('/api/v1/providers');
         const providerList = Array.isArray(res) ? res : res.items || [];
+
         // Handle custom models
         setForm((f) =>
           f.map((fi, idx) => {
@@ -489,21 +577,20 @@ export default function SettingModels() {
 
   // Cloud model options
   const cloudModelOptions = [
+    { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash' },
     { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro Preview' },
     { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro Preview' },
     { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash Preview' },
-    { id: 'gpt-4.1-mini', name: 'GPT-4.1 Mini' },
-    { id: 'gpt-4.1', name: 'GPT-4.1' },
-    { id: 'gpt-5', name: 'GPT-5' },
-    { id: 'gpt-5.1', name: 'GPT-5.1' },
-    { id: 'gpt-5.2', name: 'GPT-5.2' },
     { id: 'gpt-5.4', name: 'GPT-5.4' },
+    { id: 'gpt-5.5', name: 'GPT-5.5' },
     { id: 'gpt-5-mini', name: 'GPT-5 Mini' },
     { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5' },
     { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5' },
     { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' },
     { id: 'claude-opus-4-6', name: 'Claude Opus 4.6' },
-    { id: 'minimax_m2_5', name: 'Minimax M2.5' },
+    { id: 'claude-opus-4-7', name: 'Claude Opus 4.7' },
+    { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
+    { id: 'minimax_m2_7', name: 'Minimax M2.7' },
   ];
 
   const handleVerify = async (idx: number) => {
@@ -961,6 +1048,7 @@ export default function SettingModels() {
       toast.error(t('setting.reset-failed'));
     }
   };
+
   const handleDelete = async (idx: number) => {
     try {
       const { provider_id } = form[idx];
@@ -1018,6 +1106,8 @@ export default function SettingModels() {
   };
 
   const [subscription, setSubscription] = useState<any>(null);
+  const [trialUpgradeDialogOpen, setTrialUpgradeDialogOpen] = useState(false);
+  const [upgradingTrial, setUpgradingTrial] = useState(false);
   const fetchSubscription = async () => {
     const res = await proxyFetchGet('/api/v1/subscription');
     console.log(res);
@@ -1037,6 +1127,72 @@ export default function SettingModels() {
       console.error(error);
     } finally {
       setLoadingCredits(false);
+    }
+  };
+
+  const formatCredits = (value: unknown): string => {
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) {
+      return String(value ?? 0);
+    }
+    return new Intl.NumberFormat().format(numericValue);
+  };
+
+  const getPlanKey = () =>
+    typeof subscription?.plan_key === 'string'
+      ? subscription.plan_key.toLowerCase()
+      : '';
+
+  const getPlanName = () => {
+    const planKey = getPlanKey();
+    if (!planKey) {
+      return '';
+    }
+    return planKey.charAt(0).toUpperCase() + planKey.slice(1);
+  };
+
+  const getSelectedPlanCredits = () => {
+    const planKey = getPlanKey();
+    const monthlyCredits = Number(subscription?.monthly_credits);
+    return (
+      PLAN_CREDITS_BY_KEY[planKey] ??
+      (Number.isFinite(monthlyCredits) ? monthlyCredits : 0)
+    );
+  };
+
+  const handleTrialUpgrade = async () => {
+    try {
+      setUpgradingTrial(true);
+      await proxyFetchPost('/api/v1/upgrade-trial-to-paid');
+      toast.success(
+        t('setting.trial-upgrade-success', {
+          defaultValue: 'Your full plan credits are unlocked.',
+        })
+      );
+      setTrialUpgradeDialogOpen(false);
+      await Promise.all([fetchSubscription(), updateCredits()]);
+    } catch (error: any) {
+      const detail = error?.response?.data?.detail;
+      const recoveryUrl =
+        detail && typeof detail === 'object' ? detail.recovery_url : undefined;
+      const message =
+        detail && typeof detail === 'object'
+          ? detail.message
+          : detail || error?.message;
+
+      if (recoveryUrl) {
+        window.location.href = recoveryUrl;
+        return;
+      }
+
+      toast.error(
+        message ||
+          t('setting.trial-upgrade-failed', {
+            defaultValue: 'Upgrade failed. Please try again.',
+          })
+      );
+    } finally {
+      setUpgradingTrial(false);
     }
   };
 
@@ -1061,6 +1217,7 @@ export default function SettingModels() {
       anthropic: anthropicImage,
       gemini: geminiImage,
       openrouter: openrouterImage,
+      orcarouter: orcarouterImage,
       'tongyi-qianwen': qwenImage,
       deepseek: deepseekImage,
       ernie: ernieImage,
@@ -1157,6 +1314,12 @@ export default function SettingModels() {
           </div>
         );
       }
+      const isTrialing = Boolean(subscription?.is_trialing);
+      const selectedPlanCredits = getSelectedPlanCredits();
+      const trialDailyLimit =
+        Number(subscription?.trial_daily_credits_limit) || 300;
+      const trialTotalLimit =
+        Number(subscription?.trial_total_credits_limit) || 1000;
       return (
         <div className="flex w-full flex-col rounded-2xl bg-surface-tertiary">
           <div className="mx-6 mb-4 flex flex-col justify-start self-stretch border-x-0 border-b-[0.5px] border-t-0 border-solid border-border-secondary pb-4 pt-2">
@@ -1196,13 +1359,11 @@ export default function SettingModels() {
             <div className="justify-center self-stretch">
               <span className="text-body-sm text-text-label">
                 {t('setting.you-are-currently-subscribed-to-the')}{' '}
-                {subscription?.plan_key?.charAt(0).toUpperCase() +
-                  subscription?.plan_key?.slice(1)}
-                . {t('setting.discover-more-about-our')}{' '}
+                {getPlanName()}. {t('setting.discover-more-about-our')}{' '}
               </span>
               <span
                 onClick={() => {
-                  window.location.href = `https://www.eigent.ai/pricing`;
+                  window.location.href = `${SITE_URL}/pricing`;
                 }}
                 className="cursor-pointer text-body-sm text-text-label underline"
               >
@@ -1214,18 +1375,43 @@ export default function SettingModels() {
             </div>
           </div>
           {/*Content Area*/}
-          <div className="flex w-full flex-row items-center justify-between gap-4 px-6 pb-4">
-            <div className="text-body-sm text-text-body">
-              {t('setting.credits')}:{' '}
-              {loadingCredits ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                credits
+          <div className="flex w-full flex-row items-start justify-between gap-4 px-6 pb-4">
+            <div className="flex min-w-0 flex-1 flex-col gap-1">
+              <div className="flex items-center gap-1 text-body-sm text-text-body">
+                <span>{t('setting.credits')}:</span>
+                {loadingCredits ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <span>{formatCredits(credits)}</span>
+                )}
+              </div>
+              {isTrialing && (
+                <p className="m-0 max-w-[560px] text-label-sm leading-5 text-text-label">
+                  {t('setting.trial-plan-notice-before-upgrade', {
+                    defaultValue:
+                      "You're on a trial. Your {{planName}} plan includes {{planCredits}} credits; the trial unlocks {{daily}} credits/day (up to {{total}}) before you upgrade.",
+                    planName: getPlanName(),
+                    planCredits: formatCredits(selectedPlanCredits),
+                    daily: formatCredits(trialDailyLimit),
+                    total: formatCredits(trialTotalLimit),
+                  })}{' '}
+                  <button
+                    type="button"
+                    onClick={() => setTrialUpgradeDialogOpen(true)}
+                    className="cursor-pointer border-0 bg-transparent p-0 text-label-sm font-medium text-text-body underline"
+                  >
+                    {t('setting.upgrade', { defaultValue: 'Upgrade' })}
+                  </button>{' '}
+                  {t('setting.trial-plan-notice-after-upgrade', {
+                    defaultValue:
+                      'anytime to unlock the full plan credits and get the most out of your plan.',
+                  })}
+                </p>
               )}
             </div>
             <Button
               onClick={() => {
-                window.location.href = `https://www.eigent.ai/dashboard`;
+                window.location.href = `${SITE_URL}/dashboard`;
               }}
               variant="primary"
               size="sm"
@@ -1233,12 +1419,51 @@ export default function SettingModels() {
               {loadingCredits ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
-                subscription?.plan_key?.charAt(0).toUpperCase() +
-                subscription?.plan_key?.slice(1)
+                getPlanName()
               )}
               <Settings />
             </Button>
           </div>
+          <Dialog
+            open={trialUpgradeDialogOpen}
+            onOpenChange={setTrialUpgradeDialogOpen}
+          >
+            <DialogContent
+              size="sm"
+              overlayVariant="dark"
+              onClose={() => setTrialUpgradeDialogOpen(false)}
+            >
+              <DialogHeader
+                title={t('setting.trial-upgrade-title', {
+                  defaultValue: 'Upgrade plan',
+                })}
+              />
+              <DialogContentSection className="px-4 py-4">
+                <p className="m-0 text-body-sm text-text-body">
+                  {t('setting.trial-upgrade-body', {
+                    defaultValue:
+                      'Upgrade now to unlock full credits instantly.',
+                  })}
+                </p>
+              </DialogContentSection>
+              <DialogFooter
+                showCancelButton
+                showConfirmButton
+                cancelButtonText={t('setting.not-now', {
+                  defaultValue: 'Not Now',
+                })}
+                confirmButtonText={
+                  upgradingTrial
+                    ? t('setting.upgrading', { defaultValue: 'Upgrading...' })
+                    : t('setting.upgrade', { defaultValue: 'Upgrade' })
+                }
+                onCancel={() => setTrialUpgradeDialogOpen(false)}
+                onConfirm={handleTrialUpgrade}
+                confirmButtonDisabled={upgradingTrial}
+                cancelButtonDisabled={upgradingTrial}
+              />
+            </DialogContent>
+          </Dialog>
           <div className="flex w-full flex-1 items-center justify-between px-6 pb-4">
             <div className="flex min-w-0 flex-1 items-center">
               <span className="overflow-hidden text-ellipsis whitespace-nowrap text-body-sm">
@@ -1254,6 +1479,9 @@ export default function SettingModels() {
                   <SelectValue placeholder={t('setting.select-model-type')} />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="gemini-3.5-flash">
+                    {t('setting.gemini-3.5-flash-name')}
+                  </SelectItem>
                   <SelectItem value="gemini-3.1-pro-preview">
                     {t('setting.gemini-3.1-pro-preview-name')}
                   </SelectItem>
@@ -1263,23 +1491,11 @@ export default function SettingModels() {
                   <SelectItem value="gemini-3-flash-preview">
                     {t('setting.gemini-3-flash-preview-name')}
                   </SelectItem>
-                  <SelectItem value="gpt-4.1-mini">
-                    {t('setting.gpt-4.1-mini-name')}
-                  </SelectItem>
-                  <SelectItem value="gpt-4.1">
-                    {t('setting.gpt-4.1-name')}
-                  </SelectItem>
-                  <SelectItem value="gpt-5">
-                    {t('setting.gpt-5-name')}
-                  </SelectItem>
-                  <SelectItem value="gpt-5.1">
-                    {t('setting.gpt-5.1-name')}
-                  </SelectItem>
-                  <SelectItem value="gpt-5.2">
-                    {t('setting.gpt-5.2-name')}
-                  </SelectItem>
                   <SelectItem value="gpt-5.4">
                     {t('setting.gpt-5.4-name')}
+                  </SelectItem>
+                  <SelectItem value="gpt-5.5">
+                    {t('setting.gpt-5.5-name')}
                   </SelectItem>
                   <SelectItem value="gpt-5-mini">
                     {t('setting.gpt-5-mini-name')}
@@ -1296,8 +1512,14 @@ export default function SettingModels() {
                   <SelectItem value="claude-opus-4-6">
                     {t('setting.claude-opus-4-6-name')}
                   </SelectItem>
-                  <SelectItem value="minimax_m2_5">
-                    {t('setting.minimax-m2-5-name')}
+                  <SelectItem value="claude-opus-4-7">
+                    {t('setting.claude-opus-4-7-name')}
+                  </SelectItem>
+                  <SelectItem value="deepseek-v4-pro">
+                    {t('setting.deepseek-v4-pro-name')}
+                  </SelectItem>
+                  <SelectItem value="minimax_m2_7">
+                    {t('setting.minimax-m2-7-name')}
                   </SelectItem>
                 </SelectContent>
               </Select>
@@ -1354,6 +1576,19 @@ export default function SettingModels() {
             </div>
             <div className="text-body-sm text-text-label">
               {item.description}
+              {item.websiteUrl ? (
+                <>
+                  {' '}
+                  <a
+                    href={item.websiteUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-text-information hover:underline"
+                  >
+                    Visit {item.name}
+                  </a>
+                </>
+              ) : null}
             </div>
           </div>
           <div className="flex w-full flex-col items-center gap-4 px-6">
@@ -1411,28 +1646,63 @@ export default function SettingModels() {
               }}
             />
             {/* Model Type Setting */}
-            <Input
-              id={`modelType-${item.id}`}
-              size="default"
-              title={t('setting.model-type-setting')}
-              state={errors[idx]?.model_type ? 'error' : 'default'}
-              note={errors[idx]?.model_type ?? undefined}
-              placeholder={`${t('setting.enter-your-model-type')} ${
-                item.name
-              } ${t('setting.model-type')}`}
-              value={form[idx].model_type}
-              onChange={(e) => {
-                const v = e.target.value;
-                setForm((f) =>
-                  f.map((fi, i) => (i === idx ? { ...fi, model_type: v } : fi))
-                );
-                setErrors((errs) =>
-                  errs.map((er, i) =>
-                    i === idx ? { ...er, model_type: '' } : er
-                  )
-                );
-              }}
-            />
+            {item.modelsEndpoint ? (
+              <ProviderModelCombobox
+                providerName={item.name}
+                title={t('setting.model-type-setting')}
+                value={form[idx].model_type || ''}
+                onChange={(v) => {
+                  setForm((f) =>
+                    f.map((fi, i) =>
+                      i === idx ? { ...fi, model_type: v } : fi
+                    )
+                  );
+                  setErrors((errs) =>
+                    errs.map((er, i) =>
+                      i === idx ? { ...er, model_type: '' } : er
+                    )
+                  );
+                }}
+                groups={cloudModelsState[item.id]?.groups || []}
+                loading={cloudModelsState[item.id]?.loading || false}
+                error={
+                  cloudModelsState[item.id]?.error ??
+                  errors[idx]?.model_type ??
+                  null
+                }
+                disabled={!form[idx].apiKey}
+                disabledReason="Enter API Key first."
+                onRefresh={() => void fetchCloudProviderModels(idx)}
+                triggerPlaceholder={`${t('setting.enter-your-model-type')} ${
+                  item.name
+                } ${t('setting.model-type')}`}
+              />
+            ) : (
+              <Input
+                id={`modelType-${item.id}`}
+                size="default"
+                title={t('setting.model-type-setting')}
+                state={errors[idx]?.model_type ? 'error' : 'default'}
+                note={errors[idx]?.model_type ?? undefined}
+                placeholder={`${t('setting.enter-your-model-type')} ${
+                  item.name
+                } ${t('setting.model-type')}`}
+                value={form[idx].model_type}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setForm((f) =>
+                    f.map((fi, i) =>
+                      i === idx ? { ...fi, model_type: v } : fi
+                    )
+                  );
+                  setErrors((errs) =>
+                    errs.map((er, i) =>
+                      i === idx ? { ...er, model_type: '' } : er
+                    )
+                  );
+                }}
+              />
+            )}
             {/* externalConfig render */}
             {item.externalConfig &&
               form[idx].externalConfig &&
